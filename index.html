@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dữ liệu từ cảm biến</title>
+    <title>Hệ thống giám sát và điều khiển</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
@@ -13,70 +13,290 @@
         .chart-title { text-align: center; margin-bottom: 20px; font-size: 24px; font-weight: bold; }
         .control-section { margin-top: 30px; text-align: center; }
         .control-title { font-size: 22px; font-weight: bold; margin-bottom: 20px; }
-        .btn-control { margin: 0 5px; min-width: 120px; }
+        .btn-control { margin: 10px; min-width: 150px; }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-online { background-color: #28a745; }
+        .status-offline { background-color: #dc3545; }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .sensor-value {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            font-weight: bold;
+            background-color: #f8f9fa;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1 class="chart-title">Dữ liệu từ cảm biến và khoảng cách</h1>
-
+        <h1 class="chart-title">Hệ thống giám sát và điều khiển</h1>
+        
+        <div class="connection-status">
+            <span id="connectionStatus" class="status-indicator status-offline"></span>
+            <span id="connectionText">Đang kết nối...</span>
+        </div>
+        
         <div class="row">
             <div class="col-md-4">
-                <div class="chart-container"><canvas id="temperatureChart"></canvas></div>
+                <div class="card">
+                    <div class="card-header">Nhiệt độ</div>
+                    <div class="card-body">
+                        <div class="sensor-value" id="temperatureValue">-- °C</div>
+                        <div class="chart-container"><canvas id="temperatureChart"></canvas></div>
+                    </div>
+                </div>
             </div>
             <div class="col-md-4">
-                <div class="chart-container"><canvas id="humidityChart"></canvas></div>
+                <div class="card">
+                    <div class="card-header">Độ ẩm</div>
+                    <div class="card-body">
+                        <div class="sensor-value" id="humidityValue">-- %</div>
+                        <div class="chart-container"><canvas id="humidityChart"></canvas></div>
+                    </div>
+                </div>
             </div>
             <div class="col-md-4">
-                <div class="chart-container"><canvas id="distanceChart"></canvas></div>
+                <div class="card">
+                    <div class="card-header">Khoảng cách</div>
+                    <div class="card-body">
+                        <div class="sensor-value" id="distanceValue">-- cm</div>
+                        <div class="chart-container"><canvas id="distanceChart"></canvas></div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="control-section">
-            <h2 class="control-title">Điều khiển Relay</h2>
-            <button class="btn btn-primary btn-control" onclick="publishMessage('relay/1', 'ON')">Bật Relay 1</button>
-            <button class="btn btn-danger btn-control" onclick="publishMessage('relay/1', 'OFF')">Tắt Relay 1</button>
-            <button class="btn btn-primary btn-control" onclick="publishMessage('relay/2', 'ON')">Bật Relay 2</button>
-            <button class="btn btn-danger btn-control" onclick="publishMessage('relay/2', 'OFF')">Tắt Relay 2</button>
+        <div class="control-section card">
+            <div class="card-header control-title">Điều khiển Relay</div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 text-center">
+                        <button id="relay1Btn" class="btn btn-secondary btn-control" onclick="toggleRelay(1)">Relay 1: Đang tải...</button>
+                    </div>
+                    <div class="col-md-6 text-center">
+                        <button id="relay2Btn" class="btn btn-secondary btn-control" onclick="toggleRelay(2)">Relay 2: Đang tải...</button>
+                    </div>
+                </div>
+                <div class="mt-3 text-center">
+                    <button id="refreshBtn" class="btn btn-info" onclick="requestStatus()">Làm mới trạng thái</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        const mqttBroker = "wss://eb1e9eaf87e74023b537fbaf7fc8138a.s1.eu.hivemq.cloud:8884/mqtt";
+        // Định nghĩa các topic MQTT
+        const TOPIC_RELAY1_COMMAND = "relay/1/command";
+        const TOPIC_RELAY2_COMMAND = "relay/2/command";
+        const TOPIC_RELAY1_STATE = "relay/1/state";
+        const TOPIC_RELAY2_STATE = "relay/2/state";
+        const TOPIC_REQUEST_STATUS = "relay/status";
+        const TOPIC_TEMPERATURE = "sensor/temperature";
+        const TOPIC_HUMIDITY = "sensor/humidity";
+        const TOPIC_DISTANCE = "sensor/distance";
+
+        // Cấu hình MQTT
+        const mqttBroker = "wss://186f18001d1e49f1bddeee963197cbe8.s1.eu.hivemq.cloud:8884/mqtt";
         const mqttOptions = {
             username: "tuanlc",
             password: "123456aA@",
-            reconnectPeriod: 5000
+            reconnectPeriod: 5000,
+            clientId: "WebClient-" + Math.random().toString(16).substr(2, 8)
         };
-        const client = mqtt.connect(mqttBroker, mqttOptions);
-
-        client.on("connect", function () {
-            console.log("✅ Kết nối MQTT thành công!");
-            client.subscribe("sensor/temperature");
-            client.subscribe("sensor/humidity");
-            client.subscribe("sensor/distance");
-        });
-
-        client.on("error", function (error) {
-            console.error("Lỗi kết nối MQTT:", error);
-        });
-
-        let sensorData = {
-            temperature: [],
-            humidity: [],
-            distance: []
+        
+        let mqttClient;
+        let relayStates = {
+            "1": false,
+            "2": false
         };
+        
+        // Dữ liệu biểu đồ
+        const chartData = {
+            labels: Array(10).fill(""),
+            temperature: Array(10).fill(null),
+            humidity: Array(10).fill(null),
+            distance: Array(10).fill(null)
+        };
+        
+        let charts = {};
+        
+        // Kết nối MQTT
+        function connectMQTT() {
+            console.log("Đang kết nối đến MQTT broker...");
+            mqttClient = mqtt.connect(mqttBroker, mqttOptions);
+            
+            mqttClient.on("connect", function () {
+                console.log("✅ Kết nối MQTT thành công!");
+                document.getElementById("connectionStatus").classList.remove("status-offline");
+                document.getElementById("connectionStatus").classList.add("status-online");
+                document.getElementById("connectionText").textContent = "Đã kết nối";
+                
+                // Subscribe to topics
+                mqttClient.subscribe(TOPIC_RELAY1_STATE);
+                mqttClient.subscribe(TOPIC_RELAY2_STATE);
+                mqttClient.subscribe(TOPIC_TEMPERATURE);
+                mqttClient.subscribe(TOPIC_HUMIDITY);
+                mqttClient.subscribe(TOPIC_DISTANCE);
+                
+                // Yêu cầu trạng thái hiện tại sau khi kết nối
+                setTimeout(requestStatus, 1000);
+            });
+            
+            mqttClient.on("disconnect", function() {
+                console.log("❌ Mất kết nối MQTT");
+                document.getElementById("connectionStatus").classList.remove("status-online");
+                document.getElementById("connectionStatus").classList.add("status-offline");
+                document.getElementById("connectionText").textContent = "Mất kết nối";
+            });
+            
+            mqttClient.on("error", function(error) {
+                console.log("❌ Lỗi MQTT:", error);
+                document.getElementById("connectionStatus").classList.remove("status-online");
+                document.getElementById("connectionStatus").classList.add("status-offline");
+                document.getElementById("connectionText").textContent = "Lỗi kết nối";
+            });
 
-        function createChart(ctx, label, bgColor, borderColor) {
+            mqttClient.on("message", function (topic, message) {
+                const value = message.toString().trim();
+                console.log(`📥 Nhận dữ liệu từ ${topic}:`, value);
+
+                if (topic === TOPIC_RELAY1_STATE || topic === TOPIC_RELAY2_STATE) {
+                    const relayNumber = topic.split("/")[1];
+                    updateRelayUI(relayNumber, value);
+                } else if (topic === TOPIC_TEMPERATURE) {
+                    const tempValue = parseFloat(value);
+                    if (!isNaN(tempValue)) {
+                        document.getElementById("temperatureValue").textContent = tempValue.toFixed(1) + " °C";
+                        addDataPoint("temperature", tempValue);
+                    }
+                } else if (topic === TOPIC_HUMIDITY) {
+                    const humValue = parseFloat(value);
+                    if (!isNaN(humValue)) {
+                        document.getElementById("humidityValue").textContent = humValue.toFixed(1) + " %";
+                        addDataPoint("humidity", humValue);
+                    }
+                } else if (topic === TOPIC_DISTANCE) {
+                    const distValue = parseFloat(value);
+                    if (!isNaN(distValue)) {
+                        document.getElementById("distanceValue").textContent = distValue.toFixed(2) + " cm";
+                        addDataPoint("distance", distValue);
+                    }
+                }
+            });
+        }
+        
+        function addDataPoint(sensorType, value) {
+            // Kiểm tra giá trị hợp lệ
+            if (isNaN(value)) return;
+            
+            // Thêm timestamp mới
+            const timestamp = new Date().toLocaleTimeString();
+            
+            // Xóa giá trị đầu tiên và thêm giá trị mới vào cuối
+            chartData[sensorType].shift();
+            chartData[sensorType].push(value);
+            
+            // Cập nhật nhãn thời gian
+            chartData.labels.shift();
+            chartData.labels.push(timestamp);
+            
+            // Cập nhật biểu đồ
+            charts[sensorType].update();
+        }
+
+        function updateRelayUI(relayNumber, state) {
+            const button = document.getElementById(`relay${relayNumber}Btn`);
+            if (!button) return;
+            
+            // Cập nhật trạng thái lưu trữ
+            relayStates[relayNumber] = (state.toUpperCase() === "ON");
+            
+            if (relayStates[relayNumber]) {
+                button.classList.remove("btn-secondary", "btn-danger");
+                button.classList.add("btn-success");
+                button.textContent = `Relay ${relayNumber}: Bật`;
+            } else {
+                button.classList.remove("btn-secondary", "btn-success");
+                button.classList.add("btn-danger");
+                button.textContent = `Relay ${relayNumber}: Tắt`;
+            }
+        }
+
+        function toggleRelay(relayNumber) {
+            if (!mqttClient || !mqttClient.connected) {
+                alert("Chưa kết nối đến MQTT broker!");
+                return;
+            }
+            
+            // Đảo trạng thái hiện tại
+            const newState = !relayStates[relayNumber];
+            const stateText = newState ? "ON" : "OFF";
+            
+            // Hiển thị đang xử lý
+            const button = document.getElementById(`relay${relayNumber}Btn`);
+            button.classList.remove("btn-success", "btn-danger");
+            button.classList.add("btn-secondary");
+            button.textContent = `Relay ${relayNumber}: Đang xử lý...`;
+            
+            // Gửi lệnh mới đến topic command
+            mqttClient.publish(`relay/${relayNumber}/command`, stateText);
+            console.log(`🚀 Gửi lệnh [${stateText}] đến relay/${relayNumber}/command`);
+            
+            // Nếu sau 3 giây không nhận được phản hồi, khôi phục UI
+            setTimeout(() => {
+                if (button.textContent.includes("Đang xử lý")) {
+                    updateRelayUI(relayNumber, relayStates[relayNumber] ? "ON" : "OFF");
+                    console.log("Không nhận được phản hồi, khôi phục UI");
+                }
+            }, 3000);
+        }
+        
+        function requestStatus() {
+            if (!mqttClient || !mqttClient.connected) {
+                alert("Chưa kết nối đến MQTT broker!");
+                return;
+            }
+            
+            // Gửi yêu cầu cập nhật trạng thái
+            mqttClient.publish(TOPIC_REQUEST_STATUS, "get");
+            console.log("🔄 Yêu cầu cập nhật trạng thái");
+            
+            // Hiển thị đang xử lý
+            document.getElementById("relay1Btn").classList.add("btn-secondary");
+            document.getElementById("relay2Btn").classList.add("btn-secondary");
+            document.getElementById("relay1Btn").textContent = "Relay 1: Đang tải...";
+            document.getElementById("relay2Btn").textContent = "Relay 2: Đang tải...";
+        }
+
+        // Cấu hình biểu đồ
+        function createChart(ctx, label, dataKey, color, min, max) {
             return new Chart(ctx, {
                 type: "line",
                 data: {
-                    labels: [],
+                    labels: chartData.labels,
                     datasets: [{
                         label: label,
-                        backgroundColor: bgColor,
-                        borderColor: borderColor,
-                        data: [],
+                        borderColor: color,
+                        backgroundColor: color + "33",
+                        data: chartData[dataKey],
+                        tension: 0.3,
+                        pointRadius: 3,
                         fill: true
                     }]
                 },
@@ -84,63 +304,65 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     scales: {
-                        y: { beginAtZero: true }
+                        x: { 
+                            display: true,
+                            grid: {
+                                display: true,
+                                color: "rgba(0,0,0,0.1)"
+                            }
+                        },
+                        y: { 
+                            beginAtZero: false,
+                            min: min,
+                            max: max,
+                            grid: {
+                                display: true,
+                                color: "rgba(0,0,0,0.1)"
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    animation: {
+                        duration: 500
                     }
                 }
             });
         }
 
-        const temperatureChart = createChart(
-            document.getElementById("temperatureChart").getContext("2d"),
-            "Nhiệt độ (°C)", "rgba(255, 99, 132, 0.2)", "rgba(255, 99, 132, 1)"
-        );
-        const humidityChart = createChart(
-            document.getElementById("humidityChart").getContext("2d"),
-            "Độ ẩm (%)", "rgba(54, 162, 235, 0.2)", "rgba(54, 162, 235, 1)"
-        );
-        const distanceChart = createChart(
-            document.getElementById("distanceChart").getContext("2d"),
-            "Khoảng cách (cm)", "rgba(75, 192, 192, 0.2)", "rgba(75, 192, 192, 1)"
-        );
-
-        function updateChart(chart, datasetKey, value) {
-            if (!chart) return;
+        // Khởi tạo biểu đồ khi trang được tải
+        window.addEventListener('load', function() {
+            // Khởi tạo biểu đồ
+            charts.temperature = createChart(
+                document.getElementById("temperatureChart").getContext("2d"), 
+                "Nhiệt độ (°C)", 
+                "temperature", 
+                "#dc3545",
+                15, 35
+            );
             
-            const now = new Date();
-            const timestamp = now.toLocaleTimeString();
-
-            sensorData[datasetKey].push({ time: now, value });
-
-            sensorData[datasetKey] = sensorData[datasetKey].filter(entry => {
-                return entry.time.toDateString() === now.toDateString();
-            });
-
-            chart.data.labels = sensorData[datasetKey].map(entry => entry.time.toLocaleTimeString());
-            chart.data.datasets[0].data = sensorData[datasetKey].map(entry => entry.value);
-            chart.update();
-        }
-
-        client.on("message", function (topic, message) {
-            const value = parseFloat(message.toString());
-            console.log(`📥 Nhận dữ liệu từ ${topic}:`, value);
-
-            if (!isNaN(value)) {
-                if (topic === "sensor/temperature") updateChart(temperatureChart, "temperature", value);
-                else if (topic === "sensor/humidity") updateChart(humidityChart, "humidity", value);
-                else if (topic === "sensor/distance") updateChart(distanceChart, "distance", value);
-            } else {
-                console.error(`Dữ liệu không hợp lệ từ ${topic}:`, message.toString());
-            }
+            charts.humidity = createChart(
+                document.getElementById("humidityChart").getContext("2d"), 
+                "Độ ẩm (%)", 
+                "humidity", 
+                "#0d6efd",
+                0, 100
+            );
+            
+            charts.distance = createChart(
+                document.getElementById("distanceChart").getContext("2d"), 
+                "Khoảng cách (cm)", 
+                "distance", 
+                "#198754",
+                0, 50
+            );
+            
+            // Kết nối MQTT
+            connectMQTT();
         });
-
-        function publishMessage(topic, message) {
-            if (client.connected) {
-                client.publish(topic, message);
-                console.log(`🚀 Gửi lệnh [${message}] đến ${topic}`);
-            } else {
-                console.error("Không thể gửi lệnh, MQTT chưa kết nối!");
-            }
-        }
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
